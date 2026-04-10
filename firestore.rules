@@ -1,0 +1,147 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Fields:
+    //   - uid: string (required, immutable)
+    //   - email: string (required, email format)
+    //   - displayName: string (optional)
+    //   - role: string (required, enum: ['USER', 'ADMIN', 'PROVIDER'])
+    //   - createdAt: timestamp (required, immutable)
+    //
+    // Collection: services
+    // Fields:
+    //   - name: string (required)
+    //   - category: string (required)
+    //   - price: number (required, positive)
+    //   - description: string (optional)
+    //   - averageRating: number (optional)
+    //   - reviewCount: number (optional)
+    //
+    // Collection: bookings
+    // Fields:
+    //   - userId: string (required, immutable)
+    //   - serviceId: string (required)
+    //   - providerId: string (optional)
+    //   - status: string (required, enum: ['PENDING', 'ACCEPTED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'])
+    //   - date: string (required, ISO 8601)
+    //   - price: number (required, positive)
+    //   - createdAt: timestamp (required, immutable)
+    //   - subTasks: list (optional, list of objects {id, title, completed})
+    //
+    // Collection: reviews
+    // Fields:
+    //   - userId: string (required, immutable)
+    //   - bookingId: string (required)
+    //   - serviceId: string (required)
+    //   - providerId: string (optional)
+    //   - rating: number (required, 1-5)
+    //   - comment: string (optional)
+    //   - createdAt: timestamp (required, immutable)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'ADMIN' ||
+         (request.auth.token.email == "yogareddy107@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isProvider() {
+      return isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'PROVIDER';
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}.*");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role', 'createdAt']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             data.role in ['USER', 'ADMIN', 'PROVIDER'] &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidBooking(data) {
+      return data.keys().hasAll(['userId', 'serviceId', 'status', 'date', 'price', 'createdAt']) &&
+             data.userId is string &&
+             data.serviceId is string &&
+             data.status in ['PENDING', 'ACCEPTED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'] &&
+             isValidDateString(data.date) &&
+             data.price is number && data.price > 0 &&
+             data.createdAt is timestamp &&
+             (!('subTasks' in data) || data.subTasks is list);
+    }
+
+    function isValidReview(data) {
+      return data.keys().hasAll(['userId', 'bookingId', 'serviceId', 'rating', 'createdAt']) &&
+             data.userId == request.auth.uid &&
+             data.rating is number && data.rating >= 1 && data.rating <= 5 &&
+             data.createdAt is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (isOwner(userId) || isAdmin());
+      allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == 'USER' || isAdmin());
+      allow update: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == resource.data.role;
+    }
+
+    match /services/{serviceId} {
+      allow read: if true; // Services are public
+      allow write: if isAdmin();
+    }
+
+    match /bookings/{bookingId} {
+      allow read: if isAuthenticated() && (isOwner(resource.data.userId) || isOwner(resource.data.providerId) || isAdmin());
+      allow create: if isAuthenticated() && isOwner(request.resource.data.userId) && isValidBooking(request.resource.data);
+      allow update: if isAuthenticated() && (
+        // User can cancel their own booking or update subTasks
+        (isOwner(resource.data.userId) && (
+          (request.resource.data.status == 'CANCELLED' && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])) ||
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['subTasks']))
+        )) ||
+        // Provider can update status
+        (isOwner(resource.data.providerId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])) ||
+        // Admin can do anything
+        isAdmin()
+      ) && isValidBooking(request.resource.data);
+    }
+
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && isOwner(request.resource.data.userId) && isValidReview(request.resource.data);
+      allow update: if false; // Reviews are immutable for now
+      allow delete: if isAdmin();
+    }
+  }
+}
