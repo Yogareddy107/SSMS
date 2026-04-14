@@ -8,7 +8,8 @@ import { Shield, ArrowLeft, Loader2, Mail, Lock, User } from 'lucide-react';
 import { motion } from 'motion/react';
 import { toast } from 'sonner';
 import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
-import { auth } from '@/lib/firebase';
+import { auth, db } from '@/lib/firebase';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 
 export default function RegisterPage() {
   const [email, setEmail] = useState('');
@@ -22,7 +23,19 @@ export default function RegisterPage() {
     setIsLoading(true);
     try {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      await updateProfile(userCredential.user, { displayName: name });
+      const user = userCredential.user;
+      
+      await updateProfile(user, { displayName: name });
+      
+      // Create user document in Firestore
+      await setDoc(doc(db, 'users', user.uid), {
+        uid: user.uid,
+        email: email,
+        displayName: name,
+        role: 'USER', // Default role
+        createdAt: serverTimestamp()
+      });
+
       toast.success('Account created successfully!');
       navigate('/dashboard');
     } catch (error: any) {
@@ -33,98 +46,100 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 relative overflow-hidden">
-      {/* Background Glows */}
-      <div className="absolute top-0 left-0 w-[500px] h-[500px] bg-indigo-500/5 blur-[120px] rounded-full pointer-events-none" />
-
+    <div className="min-h-screen bg-white flex items-center justify-center p-4 relative overflow-hidden grid-lines">
       <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.3 }}
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
         className="w-full max-w-md relative z-10"
       >
-        <Link to="/" className="inline-flex items-center text-sm text-slate-500 hover:text-slate-900 mb-8 transition-colors">
-          <ArrowLeft className="w-4 h-4 mr-2" />
-          Back to Home
+        <Link to="/" className="inline-flex items-center font-black uppercase tracking-widest text-[10px] text-zinc-400 hover:text-black mb-12 transition-colors group">
+          <ArrowLeft className="w-4 h-4 mr-3 group-hover:-translate-x-1 transition-transform" />
+          Back to Terminal
         </Link>
 
-        <Card className="bg-white border-slate-200 shadow-xl rounded-3xl overflow-hidden">
-          <CardHeader className="space-y-1 text-center pb-8 pt-10">
-            <div className="flex justify-center mb-4">
-              <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-200">
-                <Shield className="w-6 h-6 text-white" />
+        <div className="bg-white border-2 border-black p-12 shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] space-y-10">
+          <div className="text-center space-y-6">
+            <div className="flex justify-center">
+              <div className="w-16 h-16 bg-black flex items-center justify-center shadow-[6px_6px_0px_0px_rgba(255,62,0,1)]">
+                <Shield className="w-8 h-8 text-white" />
               </div>
             </div>
-            <CardTitle className="text-3xl font-bold text-slate-900">Create Account</CardTitle>
-            <CardDescription className="text-slate-500">
-              Join SmartService to manage your bookings
-            </CardDescription>
-          </CardHeader>
-          <form onSubmit={handleRegister}>
-            <CardContent className="px-8 space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="name" className="text-slate-700">Full Name</Label>
+            <div>
+              <h2 className="text-4xl font-black uppercase tracking-tighter font-heading text-black">Register <span className="text-accent">Node</span>.</h2>
+              <p className="font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-2">
+                Initialize new entity registration
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleRegister} className="space-y-8">
+            <div className="space-y-6">
+              <div className="space-y-3">
+                <Label htmlFor="name" className="font-black uppercase tracking-widest text-[10px] text-zinc-500">Full Name</Label>
                 <div className="relative">
-                  <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-black" />
                   <Input
                     id="name"
-                    placeholder="John Doe"
-                    className="pl-10 bg-slate-50 border-slate-200 h-12 rounded-xl focus:ring-indigo-500"
+                    placeholder="JOHN DOE"
+                    className="pl-12 h-14 border-2 border-black rounded-none font-bold placeholder:text-zinc-200 focus:ring-0 focus:border-accent transition-colors"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     required
                   />
                 </div>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="email" className="text-slate-700">Email Address</Label>
+              <div className="space-y-3">
+                <Label htmlFor="email" className="font-black uppercase tracking-widest text-[10px] text-zinc-500">Email Address</Label>
                 <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-black" />
                   <Input
                     id="email"
                     type="email"
-                    placeholder="name@company.com"
-                    className="pl-10 bg-slate-50 border-slate-200 h-12 rounded-xl focus:ring-indigo-500"
+                    placeholder="NAME@SYSTEM.COM"
+                    className="pl-12 h-14 border-2 border-black rounded-none font-bold placeholder:text-zinc-200 focus:ring-0 focus:border-accent transition-colors"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required
                   />
                 </div>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="password" className="text-slate-700">Password</Label>
+              <div className="space-y-3">
+                <Label htmlFor="password" className="font-black uppercase tracking-widest text-[10px] text-zinc-500">Access Key</Label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-black" />
                   <Input
                     id="password"
                     type="password"
                     placeholder="••••••••"
-                    className="pl-10 bg-slate-50 border-slate-200 h-12 rounded-xl focus:ring-indigo-500"
+                    className="pl-12 h-14 border-2 border-black rounded-none font-bold placeholder:text-zinc-200 focus:ring-0 focus:border-accent transition-colors"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
                   />
                 </div>
               </div>
-            </CardContent>
-            <CardFooter className="px-8 pb-10 flex flex-col space-y-4">
+            </div>
+
+            <div className="space-y-6">
               <Button 
                 type="submit" 
-                className="w-full bg-indigo-600 hover:bg-indigo-700 h-12 rounded-xl text-white font-bold shadow-lg shadow-indigo-200"
+                className="w-full bg-black hover:bg-accent text-white h-14 rounded-none font-black uppercase tracking-widest text-[11px] border-2 border-black shadow-[6px_6px_0px_0px_rgba(255,62,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all"
                 disabled={isLoading}
               >
-                {isLoading ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : null}
-                Create Account
+                {isLoading ? <Loader2 className="w-5 h-5 animate-spin mr-3" /> : null}
+                Register Entity
               </Button>
-              <p className="text-sm text-slate-500 text-center mt-4">
-                Already have an account?{' '}
-                <Link to="/login" className="text-indigo-600 font-bold hover:underline">
-                  Sign in
+
+              <p className="text-center font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-400">
+                Already registered?{' '}
+                <Link to="/login" className="text-accent font-black hover:text-black transition-colors">
+                  Access Node
                 </Link>
               </p>
-            </CardFooter>
+            </div>
           </form>
-        </Card>
+        </div>
       </motion.div>
     </div>
   );

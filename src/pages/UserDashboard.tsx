@@ -53,6 +53,20 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { motion, AnimatePresence } from 'motion/react';
 import { getServices } from '@/services/api';
 import { toast } from 'sonner';
+import { db, auth } from '@/lib/firebase';
+import { cn } from '@/lib/utils';
+import { 
+  collection, 
+  query, 
+  where, 
+  onSnapshot, 
+  addDoc, 
+  updateDoc, 
+  doc, 
+  serverTimestamp,
+  orderBy,
+  setDoc
+} from 'firebase/firestore';
 
 interface SubTask {
   id: string;
@@ -69,6 +83,9 @@ interface Booking {
   price: string;
   subTasks?: SubTask[];
   rating?: number;
+  userId: string;
+  serviceId: string;
+  createdAt: any;
 }
 
 interface Service {
@@ -104,14 +121,76 @@ export default function UserDashboard() {
   const [selectedServiceId, setSelectedServiceId] = useState<string>('');
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [lastBooking, setLastBooking] = useState<any>(null);
-  const [bookings, setBookings] = useState<Booking[]>(recentBookings.map(b => ({
-    ...b,
-    subTasks: [
-      { id: '1', title: 'Confirm appointment', completed: true },
-      { id: '2', title: 'Prepare workspace', completed: false },
-    ]
-  })));
+  const [bookings, setBookings] = useState<Booking[]>([]);
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
+
+  const stats = [
+    { 
+      title: 'Total Bookings', 
+      value: bookings.length.toString(), 
+      icon: Calendar, 
+      color: 'text-indigo-400', 
+      bg: 'bg-indigo-400/10' 
+    },
+    { 
+      title: 'In Progress', 
+      value: bookings.filter(b => b.status === 'IN_PROGRESS' || b.status === 'ACCEPTED').length.toString(), 
+      icon: Clock, 
+      color: 'text-amber-400', 
+      bg: 'bg-amber-400/10' 
+    },
+    { 
+      title: 'Completed', 
+      value: bookings.filter(b => b.status === 'COMPLETED').length.toString(), 
+      icon: CheckCircle2, 
+      color: 'text-green-400', 
+      bg: 'bg-green-400/10' 
+    },
+    { 
+      title: 'Pending', 
+      value: bookings.filter(b => b.status === 'PENDING').length.toString(), 
+      icon: AlertCircle, 
+      color: 'text-rose-400', 
+      bg: 'bg-rose-400/10' 
+    },
+  ];
+
+  // Real-time listener for bookings
+  useEffect(() => {
+    if (!auth.currentUser) return;
+
+    const q = query(
+      collection(db, 'bookings'),
+      where('userId', '==', auth.currentUser.uid),
+      orderBy('createdAt', 'desc')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const bookingsData: Booking[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        bookingsData.push({
+          id: doc.id,
+          service: data.serviceName || data.service, // Handle both for compatibility
+          provider: data.providerName || data.provider || 'Assigned Soon',
+          date: data.date,
+          status: data.status,
+          price: typeof data.price === 'number' ? `$${data.price}` : data.price,
+          subTasks: data.subTasks || [],
+          rating: data.rating,
+          userId: data.userId,
+          serviceId: data.serviceId,
+          createdAt: data.createdAt
+        });
+      });
+      setBookings(bookingsData);
+    }, (error) => {
+      console.error("Error listening to bookings:", error);
+      toast.error("Failed to sync bookings in real-time.");
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     const fetchServices = async () => {
@@ -143,106 +222,156 @@ export default function UserDashboard() {
 
   const categories = ['All', ...Array.from(new Set(services.map(s => s.category)))];
 
-  const handleBookService = (e: React.FormEvent) => {
+  const handleBookService = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!auth.currentUser) {
+      toast.error('You must be logged in to book a service.');
+      return;
+    }
+
     setIsBooking(true);
     
     const service = services.find(s => s.id.toString() === selectedServiceId);
-    
-    setTimeout(() => {
-      setIsBooking(false);
-      const newBooking = {
-        id: `BK-${Math.floor(Math.random() * 1000)}`,
-        service: service?.name || 'Service',
-        provider: 'Assigned Soon',
-        date: (e.target as any).date.value,
-        status: 'Pending',
-        price: `$${service?.price}`,
+    const date = (e.target as any).date.value;
+
+    try {
+      const bookingData = {
+        userId: auth.currentUser.uid,
+        serviceId: selectedServiceId,
+        serviceName: service?.name || 'Service',
+        providerId: null,
+        providerName: 'Assigned Soon',
+        date: date,
+        status: 'PENDING',
+        price: service?.price || 0,
+        createdAt: serverTimestamp(),
         subTasks: [
           { id: '1', title: 'Confirm appointment', completed: false },
           { id: '2', title: 'Prepare workspace', completed: false },
         ]
       };
-      setLastBooking(newBooking);
-      setBookings([newBooking, ...bookings]);
+
+      const docRef = await addDoc(collection(db, 'bookings'), bookingData);
+      
+      setLastBooking({
+        ...bookingData,
+        id: docRef.id,
+        price: `$${bookingData.price}`,
+        service: bookingData.serviceName,
+        provider: bookingData.providerName
+      });
+      
       setShowConfirmation(true);
       toast.success('Service booked successfully!');
-    }, 1500);
+    } catch (error) {
+      console.error('Error booking service:', error);
+      toast.error('Failed to book service. Please try again.');
+    } finally {
+      setIsBooking(false);
+    }
   };
 
-  const toggleTask = (bookingId: string, taskId: string) => {
-    setBookings(prev => prev.map(b => {
-      if (b.id === bookingId) {
-        return {
-          ...b,
-          subTasks: b.subTasks?.map(t => t.id === taskId ? { ...t, completed: !t.completed } : t)
-        };
-      }
-      return b;
-    }));
+  const toggleTask = async (bookingId: string, taskId: string) => {
+    const booking = bookings.find(b => b.id === bookingId);
+    if (!booking) return;
+
+    const updatedSubTasks = booking.subTasks?.map(t => 
+      t.id === taskId ? { ...t, completed: !t.completed } : t
+    );
+
+    try {
+      await updateDoc(doc(db, 'bookings', bookingId), {
+        subTasks: updatedSubTasks
+      });
+    } catch (error) {
+      console.error('Error updating task:', error);
+      toast.error('Failed to update task.');
+    }
   };
 
-  const addTask = (bookingId: string, title: string) => {
+  const addTask = async (bookingId: string, title: string) => {
     if (!title.trim()) return;
-    setBookings(prev => prev.map(b => {
-      if (b.id === bookingId) {
-        return {
-          ...b,
-          subTasks: [...(b.subTasks || []), { id: Date.now().toString(), title, completed: false }]
-        };
-      }
-      return b;
-    }));
+    const booking = bookings.find(b => b.id === bookingId);
+    if (!booking) return;
+
+    const newTask = { id: Date.now().toString(), title, completed: false };
+    const updatedSubTasks = [...(booking.subTasks || []), newTask];
+
+    try {
+      await updateDoc(doc(db, 'bookings', bookingId), {
+        subTasks: updatedSubTasks
+      });
+    } catch (error) {
+      console.error('Error adding task:', error);
+      toast.error('Failed to add task.');
+    }
   };
 
-  const submitReview = (bookingId: string, rating: number, comment: string) => {
-    setBookings(prev => prev.map(b => {
-      if (b.id === bookingId) {
-        return { ...b, rating };
-      }
-      return b;
-    }));
-    toast.success('Review submitted! Thank you for your feedback.');
+  const submitReview = async (bookingId: string, rating: number, comment: string) => {
+    if (!auth.currentUser) return;
+
+    try {
+      // Update booking with rating
+      await updateDoc(doc(db, 'bookings', bookingId), { rating });
+
+      // Add to reviews collection
+      const booking = bookings.find(b => b.id === bookingId);
+      await addDoc(collection(db, 'reviews'), {
+        userId: auth.currentUser.uid,
+        bookingId: bookingId,
+        serviceId: booking?.serviceId,
+        rating,
+        comment,
+        createdAt: serverTimestamp()
+      });
+
+      toast.success('Review submitted! Thank you for your feedback.');
+    } catch (error) {
+      console.error('Error submitting review:', error);
+      toast.error('Failed to submit review.');
+    }
   };
 
   return (
-    <div className="space-y-8 bg-slate-50/30 p-4 md:p-8 rounded-3xl">
+    <div className="space-y-12 bg-white p-0 md:p-0 rounded-none">
       {/* Welcome Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-8 pb-12 border-b-2 border-black">
         <div>
-          <h2 className="text-3xl font-bold text-slate-900">Welcome back, John!</h2>
-          <p className="text-slate-500">Here's what's happening with your services today.</p>
+          <h2 className="text-4xl font-black uppercase tracking-tighter font-heading text-black">
+            Welcome back, <span className="text-accent">{auth.currentUser?.displayName?.split(' ')[0] || 'User'}</span>.
+          </h2>
+          <p className="text-zinc-500 font-medium mt-2">System Status: <span className="text-black font-bold">Operational</span>. Your home services are synchronized.</p>
         </div>
         
         <Dialog>
           <DialogTrigger asChild>
-            <Button className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-500/20 h-11 px-6 rounded-xl">
-              <Plus className="w-5 h-5 mr-2" />
+            <Button className="bg-black hover:bg-accent text-white h-14 px-8 rounded-none font-black uppercase tracking-widest text-xs border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all">
+              <Plus className="w-5 h-5 mr-3" />
               Book New Service
             </Button>
           </DialogTrigger>
-          <DialogContent className="bg-white border-slate-200 text-slate-900 sm:max-w-[500px]">
-            <DialogHeader>
-              <DialogTitle>Book a Service</DialogTitle>
-              <DialogDescription className="text-slate-500">
-                Choose a service and schedule your appointment.
+          <DialogContent className="bg-white border-2 border-black text-black sm:max-w-[600px] rounded-none shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] p-0 overflow-hidden">
+            <DialogHeader className="p-8 bg-zinc-50 border-b-2 border-black">
+              <DialogTitle className="text-2xl font-black uppercase tracking-tighter font-heading">Service Request</DialogTitle>
+              <DialogDescription className="text-zinc-500 font-medium">
+                Initialize a new service deployment for your residence.
               </DialogDescription>
             </DialogHeader>
 
             {/* Search & Filters in Modal */}
-            <div className="space-y-4 py-4">
-              <div className="flex flex-col sm:flex-row gap-2">
+            <div className="p-8 space-y-8">
+              <div className="flex flex-col sm:flex-row gap-4">
                 <div className="relative flex-1">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-black" />
                   <Input 
-                    placeholder="Search services..." 
-                    className="pl-9 bg-slate-50 border-slate-200"
+                    placeholder="SEARCH SERVICES..." 
+                    className="pl-10 h-12 bg-white border-2 border-black rounded-none font-bold placeholder:text-zinc-300 focus:ring-0"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                   />
                 </div>
                 <select 
-                  className="bg-slate-50 border-slate-200 rounded-md h-10 px-3 text-sm"
+                  className="bg-white border-2 border-black rounded-none h-12 px-4 text-xs font-black uppercase tracking-widest focus:ring-0"
                   value={categoryFilter}
                   onChange={(e) => setCategoryFilter(e.target.value)}
                 >
@@ -250,10 +379,10 @@ export default function UserDashboard() {
                 </select>
               </div>
 
-              <div className="space-y-2">
-                <div className="flex justify-between text-xs text-slate-500">
-                  <Label>Price Range</Label>
-                  <span>${priceRange[0]} - ${priceRange[1]}</span>
+              <div className="space-y-4">
+                <div className="flex justify-between font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-400">
+                  <Label>Investment Range</Label>
+                  <span className="text-black">${priceRange[0]} — ${priceRange[1]}</span>
                 </div>
                 <Input 
                   type="range" 
@@ -262,76 +391,86 @@ export default function UserDashboard() {
                   step="10"
                   value={priceRange[1]}
                   onChange={(e) => setPriceRange([priceRange[0], parseInt(e.target.value)])}
-                  className="h-2 bg-slate-100 accent-indigo-600"
+                  className="h-2 bg-zinc-100 accent-black cursor-pointer"
                 />
               </div>
 
-              <Separator className="bg-slate-100" />
-
-              <ScrollArea className="h-[200px] pr-4">
-                <div className="space-y-2">
+              <ScrollArea className="h-[250px] border-2 border-black">
+                <div className="divide-y-2 divide-black">
                   {filteredServices.map(s => (
                     <div 
                       key={s.id}
                       onClick={() => setSelectedServiceId(s.id.toString())}
                       className={cn(
-                        "p-3 rounded-lg border transition-all cursor-pointer flex justify-between items-center group",
+                        "p-6 transition-all cursor-pointer flex justify-between items-center group",
                         selectedServiceId === s.id.toString() 
-                          ? "bg-indigo-50 border-indigo-200" 
-                          : "bg-white border-slate-100 hover:border-slate-200"
+                          ? "bg-black text-white" 
+                          : "bg-white text-black hover:bg-zinc-50"
                       )}
                     >
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <p className="font-medium text-sm text-slate-900">{s.name}</p>
-                          <Badge variant="secondary" className="text-[10px] bg-slate-100 text-slate-600">{s.category}</Badge>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-3">
+                          <p className="font-black uppercase tracking-tight text-lg">{s.name}</p>
+                          <Badge className={cn(
+                            "rounded-none border-2 text-[9px] font-black uppercase tracking-widest px-2 py-0.5",
+                            selectedServiceId === s.id.toString() ? "border-white text-white" : "border-black text-black"
+                          )}>
+                            {s.category}
+                          </Badge>
                         </div>
-                        <div className="flex items-center gap-1 mt-1">
-                          <Star className="w-3 h-3 text-amber-500 fill-amber-500" />
-                          <span className="text-xs text-slate-500">{s.averageRating?.toFixed(1)}</span>
+                        <div className="flex items-center gap-1">
+                          <Star className={cn("w-3 h-3", selectedServiceId === s.id.toString() ? "text-accent fill-accent" : "text-black fill-black")} />
+                          <span className="font-mono text-[10px] font-bold">{s.averageRating?.toFixed(1)}</span>
                         </div>
                       </div>
-                      <div className="text-right flex items-center gap-3">
-                        <span className="font-bold text-indigo-600">${s.price}</span>
+                      <div className="text-right flex items-center gap-4">
+                        <span className={cn("text-xl font-black font-heading", selectedServiceId === s.id.toString() ? "text-accent" : "text-black")}>
+                          ${s.price}
+                        </span>
                         <Sheet>
                           <SheetTrigger asChild>
                             <Button 
                               variant="ghost" 
                               size="icon" 
-                              className="h-8 w-8 text-slate-400 hover:text-slate-600"
+                              className={cn(
+                                "h-10 w-10 border-2 transition-colors rounded-none",
+                                selectedServiceId === s.id.toString() ? "border-white text-white hover:bg-white hover:text-black" : "border-black text-black hover:bg-black hover:text-white"
+                              )}
                               onClick={(e) => e.stopPropagation()}
                             >
-                              <Info className="w-4 h-4" />
+                              <Info className="w-5 h-5" />
                             </Button>
                           </SheetTrigger>
-                          <SheetContent className="bg-white border-slate-200 text-slate-900">
-                            <SheetHeader>
-                              <SheetTitle>{s.name}</SheetTitle>
-                              <SheetDescription className="text-slate-500">
-                                Service Details & Description
+                          <SheetContent className="bg-white border-l-2 border-black text-black rounded-none p-0">
+                            <SheetHeader className="p-8 bg-zinc-50 border-b-2 border-black">
+                              <SheetTitle className="text-3xl font-black uppercase tracking-tighter font-heading">{s.name}</SheetTitle>
+                              <SheetDescription className="text-zinc-500 font-medium">
+                                Technical Specifications & Service Scope
                               </SheetDescription>
                             </SheetHeader>
-                            <div className="mt-6 space-y-6">
-                              <img 
-                                src={`https://picsum.photos/seed/${s.name}/400/200`} 
-                                alt={s.name} 
-                                className="rounded-xl w-full object-cover h-40 shadow-sm"
-                                referrerPolicy="no-referrer"
-                              />
-                              <div className="space-y-2">
-                                <h4 className="font-bold text-indigo-600">About this service</h4>
-                                <p className="text-sm text-slate-600 leading-relaxed">{s.description}</p>
+                            <div className="p-8 space-y-8">
+                              <div className="border-2 border-black overflow-hidden bg-zinc-100">
+                                <img 
+                                  src={`https://picsum.photos/seed/${s.name}/600/300`} 
+                                  alt={s.name} 
+                                  className="w-full object-cover h-48 grayscale hover:grayscale-0 transition-all duration-700"
+                                  referrerPolicy="no-referrer"
+                                />
                               </div>
-                              <div className="grid grid-cols-2 gap-4">
-                                <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
-                                  <p className="text-xs text-slate-500 uppercase">Price</p>
-                                  <p className="font-bold text-lg text-slate-900">${s.price}</p>
+                              <div className="space-y-4">
+                                <h4 className="text-xs font-black uppercase tracking-[0.2em] text-accent">Service Overview</h4>
+                                <p className="text-lg font-medium leading-relaxed text-zinc-600">{s.description}</p>
+                              </div>
+                              <div className="grid grid-cols-2 gap-0 border-2 border-black">
+                                <div className="p-6 border-r-2 border-black bg-zinc-50">
+                                  <p className="font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-400 mb-2">Investment</p>
+                                  <p className="text-3xl font-black font-heading text-black">${s.price}</p>
                                 </div>
-                                <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
-                                  <p className="text-xs text-slate-500 uppercase">Rating</p>
-                                  <div className="flex items-center gap-1">
-                                    <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
-                                    <p className="font-bold text-lg text-slate-900">{s.averageRating?.toFixed(1)}</p>
+                                <div className="p-6 bg-white">
+                                  <p className="font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-400 mb-2">Rating</p>
+                                  <div className="flex items-center gap-2">
+                                    <Star className="w-6 h-6 text-accent fill-accent" />
+                                    <p className="text-3xl font-black font-heading text-black">{s.averageRating?.toFixed(1)}</p>
                                   </div>
                                 </div>
                               </div>
@@ -344,15 +483,15 @@ export default function UserDashboard() {
                 </div>
               </ScrollArea>
 
-              <form onSubmit={handleBookService} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="date">Preferred Date</Label>
-                  <Input id="date" type="date" className="bg-slate-50 border-slate-200" required />
+              <form onSubmit={handleBookService} className="space-y-6">
+                <div className="space-y-3">
+                  <Label htmlFor="date" className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Deployment Date</Label>
+                  <Input id="date" type="date" className="h-14 bg-white border-2 border-black rounded-none font-bold focus:ring-0" required />
                 </div>
                 <DialogFooter>
-                  <Button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white" disabled={isBooking || !selectedServiceId}>
-                    {isBooking && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                    Confirm Booking
+                  <Button type="submit" className="w-full h-16 bg-black hover:bg-accent text-white rounded-none font-black uppercase tracking-widest text-sm border-2 border-black shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all" disabled={isBooking || !selectedServiceId}>
+                    {isBooking && <Loader2 className="w-5 h-5 mr-3 animate-spin" />}
+                    Initialize Booking
                   </Button>
                 </DialogFooter>
               </form>
@@ -363,201 +502,200 @@ export default function UserDashboard() {
 
       {/* Booking Confirmation Dialog */}
       <Dialog open={showConfirmation} onOpenChange={setShowConfirmation}>
-        <DialogContent className="bg-white border-slate-200 text-slate-900 sm:max-w-[425px] text-center">
-          <div className="flex justify-center mb-4">
-            <div className="w-16 h-16 bg-green-50 rounded-full flex items-center justify-center">
-              <CheckCircle2 className="w-10 h-10 text-green-600" />
+        <DialogContent className="bg-white border-2 border-black text-black sm:max-w-[450px] rounded-none shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] p-0 overflow-hidden">
+          <div className="p-12 text-center">
+            <div className="flex justify-center mb-8">
+              <div className="w-20 h-20 bg-accent border-2 border-black flex items-center justify-center shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
+                <CheckCircle2 className="w-10 h-10 text-white" />
+              </div>
+            </div>
+            <DialogHeader className="space-y-4">
+              <DialogTitle className="text-4xl font-black uppercase tracking-tighter font-heading">Confirmed.</DialogTitle>
+              <DialogDescription className="text-zinc-500 font-medium">
+                Service deployment has been successfully scheduled.
+              </DialogDescription>
+            </DialogHeader>
+            {lastBooking && (
+              <div className="bg-zinc-50 border-2 border-black p-8 my-8 text-left space-y-4">
+                <div className="flex justify-between items-center border-b border-zinc-200 pb-4">
+                  <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-400">Service</span>
+                  <span className="font-black uppercase tracking-tight text-black">{lastBooking.service}</span>
+                </div>
+                <div className="flex justify-between items-center border-b border-zinc-200 pb-4">
+                  <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-400">Date</span>
+                  <span className="font-black uppercase tracking-tight text-black">{lastBooking.date}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-400">Investment</span>
+                  <span className="font-black text-2xl font-heading text-accent">{lastBooking.price}</span>
+                </div>
+              </div>
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Button variant="outline" className="h-14 border-2 border-black rounded-none font-black uppercase tracking-widest text-[10px] hover:bg-black hover:text-white transition-all" onClick={() => toast.info('Added to your calendar!')}>
+                <CalendarPlus className="w-4 h-4 mr-2" />
+                Add to Calendar
+              </Button>
+              <Button className="h-14 bg-black text-white rounded-none font-black uppercase tracking-widest text-[10px] border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all" onClick={() => setShowConfirmation(false)}>
+                View Details
+              </Button>
             </div>
           </div>
-          <DialogHeader>
-            <DialogTitle className="text-2xl font-bold">Booking Confirmed!</DialogTitle>
-            <DialogDescription className="text-slate-500">
-              Your service has been scheduled successfully.
-            </DialogDescription>
-          </DialogHeader>
-          {lastBooking && (
-            <div className="bg-slate-50 rounded-xl p-4 my-4 border border-slate-100 text-left space-y-3">
-              <div className="flex justify-between items-center">
-                <span className="text-xs text-slate-500 uppercase">Service</span>
-                <span className="font-bold text-slate-900">{lastBooking.service}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-xs text-slate-500 uppercase">Date</span>
-                <span className="font-bold text-slate-900">{lastBooking.date}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-xs text-slate-500 uppercase">Price</span>
-                <span className="font-bold text-indigo-600">{lastBooking.price}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-xs text-slate-500 uppercase">Provider</span>
-                <span className="text-sm italic text-slate-500">{lastBooking.provider}</span>
-              </div>
-            </div>
-          )}
-          <DialogFooter className="flex flex-col sm:flex-row gap-2">
-            <Button variant="outline" className="flex-1 border-slate-200 text-slate-700" onClick={() => toast.info('Added to your calendar!')}>
-              <CalendarPlus className="w-4 h-4 mr-2" />
-              Add to Calendar
-            </Button>
-            <Button className="flex-1 bg-indigo-600 text-white" onClick={() => setShowConfirmation(false)}>
-              View Booking Details
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-0 border-2 border-black">
         {stats.map((stat, i) => (
           <motion.div
             key={stat.title}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: i * 0.1 }}
+            className="p-8 border-r-2 border-black last:border-r-0 bg-white hover:bg-zinc-50 transition-colors group"
           >
-            <Card className="bg-white border-slate-100 hover:border-indigo-100 transition-colors shadow-sm">
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <div className={`p-2 rounded-lg ${stat.bg.replace('/10', '')} bg-opacity-10`}>
-                    <stat.icon className={`w-5 h-5 ${stat.color}`} />
-                  </div>
-                  <ArrowUpRight className="w-4 h-4 text-slate-300" />
-                </div>
-                <p className="text-sm text-slate-500 font-medium">{stat.title}</p>
-                <h3 className="text-2xl font-bold text-slate-900 mt-1">{stat.value}</h3>
-              </CardContent>
-            </Card>
+            <div className="flex items-center justify-between mb-8">
+              <div className={cn("w-12 h-12 border-2 border-black flex items-center justify-center transition-colors", stat.bg)}>
+                <stat.icon className={cn("w-6 h-6", stat.color)} />
+              </div>
+              <ArrowUpRight className="w-5 h-5 text-zinc-300 group-hover:text-black transition-colors" />
+            </div>
+            <p className="font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-400 mb-2">{stat.title}</p>
+            <h3 className="text-4xl font-black font-heading text-black">{stat.value}</h3>
           </motion.div>
         ))}
       </div>
 
       {/* Main Content Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
         {/* Recent Bookings Table */}
-        <Card className="lg:col-span-2 bg-white border-slate-100 shadow-sm">
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-xl text-slate-900">My Bookings</CardTitle>
-            <div className="flex items-center space-x-2">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                <Input 
-                  placeholder="Search bookings..." 
-                  className="pl-9 bg-slate-50 border-slate-200 h-9 w-40 sm:w-64 text-sm"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-              </div>
+        <div className="lg:col-span-8 space-y-8">
+          <div className="flex flex-col sm:flex-row items-end justify-between gap-6">
+            <h3 className="text-4xl font-black uppercase tracking-tighter font-heading text-black">
+              Service <span className="text-accent">Log</span>.
+            </h3>
+            <div className="relative w-full sm:w-80">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-black" />
+              <Input 
+                placeholder="SEARCH LOGS..." 
+                className="pl-10 h-12 bg-white border-2 border-black rounded-none font-bold placeholder:text-zinc-300 focus:ring-0"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
             </div>
-          </CardHeader>
-          <CardContent>
+          </div>
+
+          <div className="border-2 border-black overflow-hidden bg-white shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
             <Table>
-              <TableHeader>
-                <TableRow className="border-slate-100 hover:bg-transparent">
-                  <TableHead className="text-slate-500">Service</TableHead>
-                  <TableHead className="text-slate-500">Provider</TableHead>
-                  <TableHead className="text-slate-500">Date</TableHead>
-                  <TableHead className="text-slate-500">Status</TableHead>
-                  <TableHead className="text-slate-500 text-right">Actions</TableHead>
+              <TableHeader className="bg-zinc-50 border-b-2 border-black">
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="font-black uppercase tracking-widest text-[10px] text-black h-14 px-6">Service</TableHead>
+                  <TableHead className="font-black uppercase tracking-widest text-[10px] text-black h-14 px-6">Provider</TableHead>
+                  <TableHead className="font-black uppercase tracking-widest text-[10px] text-black h-14 px-6">Date</TableHead>
+                  <TableHead className="font-black uppercase tracking-widest text-[10px] text-black h-14 px-6">Status</TableHead>
+                  <TableHead className="font-black uppercase tracking-widest text-[10px] text-black h-14 px-6 text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {bookings.filter(b => b.service.toLowerCase().includes(searchQuery.toLowerCase())).map((booking) => (
-                  <TableRow key={booking.id} className="border-slate-100 hover:bg-slate-50 transition-colors">
-                    <TableCell className="font-medium text-slate-700">{booking.service}</TableCell>
-                    <TableCell className="text-slate-600">{booking.provider}</TableCell>
-                    <TableCell className="text-slate-600">{booking.date}</TableCell>
-                    <TableCell>
+                  <TableRow key={booking.id} className="border-b-2 border-black last:border-b-0 hover:bg-zinc-50 transition-colors">
+                    <TableCell className="font-black uppercase tracking-tight text-sm px-6 py-6">{booking.service}</TableCell>
+                    <TableCell className="font-medium text-zinc-500 px-6 py-6">{booking.provider}</TableCell>
+                    <TableCell className="font-mono text-xs font-bold px-6 py-6">{booking.date}</TableCell>
+                    <TableCell className="px-6 py-6">
                       <Badge 
-                        variant="secondary" 
                         className={cn(
-                          "rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
-                          booking.status === 'Completed' ? "bg-green-50 text-green-600 border border-green-100" :
-                          booking.status === 'In Progress' ? "bg-amber-50 text-amber-600 border border-amber-100" :
-                          "bg-slate-50 text-slate-600 border border-slate-100"
+                          "rounded-none border-2 px-3 py-1 text-[9px] font-black uppercase tracking-widest",
+                          booking.status === 'COMPLETED' ? "bg-green-50 text-green-600 border-green-600" :
+                          booking.status === 'IN_PROGRESS' ? "bg-amber-50 text-amber-600 border-amber-600" :
+                          booking.status === 'ACCEPTED' ? "bg-black text-white border-black" :
+                          "bg-white text-zinc-400 border-zinc-200"
                         )}
                       >
                         {booking.status}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="text-right px-6 py-6">
                       <Dialog>
                         <DialogTrigger asChild>
                           <Button 
                             variant="ghost" 
                             size="icon" 
-                            className="h-8 w-8 text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50"
+                            className="h-10 w-10 border-2 border-black rounded-none hover:bg-black hover:text-white transition-all"
                             onClick={() => setSelectedBooking(booking)}
                           >
-                            <ChevronRight className="w-5 h-5" />
+                            <ChevronRight className="w-6 h-6" />
                           </Button>
                         </DialogTrigger>
-                        <DialogContent className="bg-white border-slate-200 text-slate-900 sm:max-w-[600px]">
-                          <DialogHeader>
-                            <DialogTitle className="flex items-center gap-2">
+                        <DialogContent className="bg-white border-2 border-black text-black sm:max-w-[700px] rounded-none shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] p-0 overflow-hidden">
+                          <DialogHeader className="p-8 bg-zinc-50 border-b-2 border-black">
+                            <DialogTitle className="flex items-center gap-4 text-3xl font-black uppercase tracking-tighter font-heading">
                               {booking.service}
-                              <Badge variant="outline" className="text-[10px] border-slate-200 text-slate-500">{booking.id}</Badge>
+                              <Badge className="rounded-none border-2 border-black bg-white text-black text-[10px] font-mono px-2">{booking.id}</Badge>
                             </DialogTitle>
-                            <DialogDescription className="text-slate-500">
-                              Manage your booking details and tasks.
+                            <DialogDescription className="text-zinc-500 font-medium">
+                              Technical deployment management and task synchronization.
                             </DialogDescription>
                           </DialogHeader>
 
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 py-4">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-0">
                             {/* Details */}
-                            <div className="space-y-4">
-                              <div className="p-4 bg-slate-50 rounded-xl border border-slate-100 space-y-3">
-                                <div className="flex justify-between">
-                                  <span className="text-xs text-slate-500 uppercase">Status</span>
-                                  <Badge className="bg-indigo-50 text-indigo-600 border border-indigo-100">{booking.status}</Badge>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span className="text-xs text-slate-500 uppercase">Provider</span>
-                                  <span className="text-sm font-medium text-slate-700">{booking.provider}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span className="text-xs text-slate-500 uppercase">Date</span>
-                                  <span className="text-sm font-medium text-slate-700">{booking.date}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span className="text-xs text-slate-500 uppercase">Price</span>
-                                  <span className="text-sm font-bold text-indigo-600">{booking.price}</span>
+                            <div className="p-8 border-r-2 border-black space-y-8">
+                              <div className="space-y-4">
+                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-accent">Deployment Data</h4>
+                                <div className="space-y-4">
+                                  <div className="flex justify-between items-center border-b border-zinc-100 pb-3">
+                                    <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-400">Status</span>
+                                    <Badge className="rounded-none border-2 border-black bg-black text-white text-[9px] font-black uppercase tracking-widest px-2 py-0.5">{booking.status}</Badge>
+                                  </div>
+                                  <div className="flex justify-between items-center border-b border-zinc-100 pb-3">
+                                    <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-400">Provider</span>
+                                    <span className="font-black uppercase tracking-tight text-sm">{booking.provider}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center border-b border-zinc-100 pb-3">
+                                    <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-400">Date</span>
+                                    <span className="font-black uppercase tracking-tight text-sm">{booking.date}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-400">Investment</span>
+                                    <span className="font-black text-xl font-heading text-accent">{booking.price}</span>
+                                  </div>
                                 </div>
                               </div>
 
                               {/* Review Section (Only if Completed) */}
-                              {booking.status === 'Completed' && (
-                                <div className="p-4 bg-slate-50 rounded-xl border border-slate-100 space-y-3">
-                                  <h4 className="text-sm font-bold flex items-center gap-2 text-slate-900">
-                                    <MessageSquare className="w-4 h-4 text-indigo-600" />
-                                    {booking.rating ? 'Your Review' : 'Leave a Review'}
+                              {booking.status === 'COMPLETED' && (
+                                <div className="space-y-4 pt-8 border-t-2 border-black">
+                                  <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-accent flex items-center gap-2">
+                                    <MessageSquare className="w-4 h-4" />
+                                    Performance Review
                                   </h4>
                                   {booking.rating ? (
-                                    <div className="flex items-center gap-1">
+                                    <div className="flex items-center gap-2">
                                       {[1, 2, 3, 4, 5].map(star => (
                                         <Star 
                                           key={star} 
-                                          className={cn("w-4 h-4", star <= booking.rating! ? "text-amber-500 fill-amber-500" : "text-slate-300")} 
+                                          className={cn("w-5 h-5", star <= booking.rating! ? "text-accent fill-accent" : "text-zinc-200")} 
                                         />
                                       ))}
-                                      <span className="text-xs text-slate-500 ml-2">Verified Review</span>
+                                      <span className="font-mono text-[10px] font-bold text-zinc-400 ml-2 uppercase">Verified</span>
                                     </div>
                                   ) : (
-                                    <div className="space-y-3">
-                                      <div className="flex gap-1">
+                                    <div className="space-y-4">
+                                      <div className="flex gap-2">
                                         {[1, 2, 3, 4, 5].map(star => (
                                           <Button 
                                             key={star} 
                                             variant="ghost" 
                                             size="icon" 
-                                            className="h-8 w-8 hover:bg-amber-50 hover:text-amber-500"
+                                            className="h-10 w-10 border-2 border-black rounded-none hover:bg-accent hover:text-white transition-all"
                                             onClick={() => submitReview(booking.id, star, '')}
                                           >
-                                            <Star className="w-4 h-4" />
+                                            <Star className="w-5 h-5" />
                                           </Button>
                                         ))}
                                       </div>
-                                      <p className="text-[10px] text-slate-500 italic">Click a star to rate your experience.</p>
+                                      <p className="font-mono text-[9px] text-zinc-400 uppercase tracking-widest">Select rating to finalize deployment record.</p>
                                     </div>
                                   )}
                                 </div>
@@ -565,31 +703,31 @@ export default function UserDashboard() {
                             </div>
 
                             {/* Tasks Section */}
-                            <div className="space-y-4">
-                              <h4 className="text-sm font-bold flex items-center gap-2 text-slate-900">
-                                <ListTodo className="w-4 h-4 text-indigo-600" />
-                                Service Tasks
+                            <div className="p-8 space-y-8">
+                              <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-accent flex items-center gap-2">
+                                <ListTodo className="w-4 h-4" />
+                                Operational Tasks
                               </h4>
-                              <div className="bg-slate-50 rounded-xl border border-slate-100 p-4 min-h-[200px] flex flex-col">
-                                <ScrollArea className="flex-1 max-h-[150px]">
-                                  <div className="space-y-2">
+                              <div className="space-y-0 border-2 border-black divide-y-2 divide-black">
+                                <ScrollArea className="h-[200px]">
+                                  <div className="divide-y-2 divide-black">
                                     {booking.subTasks?.map(task => (
                                       <div 
                                         key={task.id} 
-                                        className="flex items-center gap-3 group"
+                                        className="flex items-center gap-4 p-4 group bg-white hover:bg-zinc-50 transition-colors"
                                       >
                                         <button 
                                           onClick={() => toggleTask(booking.id, task.id)}
                                           className={cn(
-                                            "w-5 h-5 rounded border transition-all flex items-center justify-center",
-                                            task.completed ? "bg-indigo-600 border-indigo-600" : "border-slate-300 hover:border-indigo-500"
+                                            "w-6 h-6 border-2 transition-all flex items-center justify-center rounded-none",
+                                            task.completed ? "bg-black border-black" : "border-black hover:bg-zinc-100"
                                           )}
                                         >
-                                          {task.completed && <CheckCircle2 className="w-3 h-3 text-white" />}
+                                          {task.completed && <CheckCircle2 className="w-4 h-4 text-white" />}
                                         </button>
                                         <span className={cn(
-                                          "text-sm transition-all",
-                                          task.completed ? "text-slate-400 line-through" : "text-slate-600"
+                                          "font-bold uppercase tracking-tight text-xs transition-all",
+                                          task.completed ? "text-zinc-300 line-through" : "text-black"
                                         )}>
                                           {task.title}
                                         </span>
@@ -597,10 +735,10 @@ export default function UserDashboard() {
                                     ))}
                                   </div>
                                 </ScrollArea>
-                                <div className="mt-4 flex gap-2">
+                                <div className="p-4 bg-zinc-50 flex gap-3">
                                   <Input 
-                                    placeholder="Add task..." 
-                                    className="h-8 text-xs bg-white border-slate-200"
+                                    placeholder="NEW TASK..." 
+                                    className="h-10 bg-white border-2 border-black rounded-none font-bold text-[10px] focus:ring-0"
                                     onKeyDown={(e) => {
                                       if (e.key === 'Enter') {
                                         addTask(booking.id, e.currentTarget.value);
@@ -608,8 +746,8 @@ export default function UserDashboard() {
                                       }
                                     }}
                                   />
-                                  <Button size="icon" className="h-8 w-8 bg-indigo-600 text-white">
-                                    <Plus className="w-4 h-4" />
+                                  <Button size="icon" className="h-10 w-10 bg-black text-white border-2 border-black rounded-none hover:bg-accent transition-all">
+                                    <Plus className="w-5 h-5" />
                                   </Button>
                                 </div>
                               </div>
@@ -622,60 +760,52 @@ export default function UserDashboard() {
                 ))}
               </TableBody>
             </Table>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
         {/* Quick Actions / Payment */}
-        <div className="space-y-6">
-          <Card className="bg-indigo-600 border-none shadow-xl shadow-indigo-500/20 relative overflow-hidden group">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 blur-3xl rounded-full -mr-10 -mt-10 group-hover:scale-150 transition-transform duration-700" />
-            <CardHeader>
-              <CardTitle className="text-white flex items-center">
-                <CreditCard className="w-5 h-5 mr-2" />
-                Quick Pay
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="text-indigo-100 text-sm">You have 1 pending payment for "Electrical Service".</p>
-              <Button className="w-full bg-white text-indigo-600 hover:bg-indigo-50 font-bold">
+        <div className="lg:col-span-4 space-y-12">
+          <div className="bg-accent border-2 border-black p-8 shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] relative overflow-hidden group">
+            <div className="absolute inset-0 grid-lines opacity-20" />
+            <div className="relative z-10 space-y-8">
+              <div className="flex items-center text-white">
+                <CreditCard className="w-6 h-6 mr-3" />
+                <h3 className="text-2xl font-black uppercase tracking-tighter font-heading">Quick Pay.</h3>
+              </div>
+              <p className="text-white font-bold text-lg leading-tight">You have <span className="text-black">1 pending payment</span> for "Electrical Service".</p>
+              <Button className="w-full h-16 bg-black hover:bg-white hover:text-black text-white rounded-none font-black uppercase tracking-widest text-sm border-2 border-black transition-all">
                 Pay $95.00 Now
               </Button>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
 
-          <Card className="bg-white border-slate-100 shadow-sm">
-            <CardHeader>
-              <CardTitle className="text-slate-900 text-lg">Service Timeline</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-6 relative before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-[2px] before:bg-slate-100">
-                {[
-                  { time: '10:30 AM', event: 'Provider arrived', status: 'done' },
-                  { time: '11:00 AM', event: 'Work started', status: 'active' },
-                  { time: 'Expected 1:00 PM', event: 'Completion', status: 'pending' },
-                ].map((item, i) => (
-                  <div key={i} className="flex items-start space-x-4 relative">
-                    <div className={cn(
-                      "w-6 h-6 rounded-full border-4 border-white z-10 shadow-sm",
-                      item.status === 'done' ? "bg-green-500" : 
-                      item.status === 'active' ? "bg-indigo-600 animate-pulse" : 
-                      "bg-slate-200"
-                    )} />
-                    <div>
-                      <p className="text-xs text-slate-400 font-medium uppercase tracking-wider">{item.time}</p>
-                      <p className="text-sm text-slate-700 font-semibold">{item.event}</p>
-                    </div>
+          <div className="bg-white border-2 border-black p-8 shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
+            <h3 className="text-2xl font-black uppercase tracking-tighter font-heading text-black mb-12">Timeline.</h3>
+            <div className="space-y-12 relative before:absolute before:left-[15px] before:top-2 before:bottom-2 before:w-[2px] before:bg-black">
+              {[
+                { time: '10:30 AM', event: 'Provider arrived', status: 'done' },
+                { time: '11:00 AM', event: 'Work started', status: 'active' },
+                { time: 'Expected 1:00 PM', event: 'Completion', status: 'pending' },
+              ].map((item, i) => (
+                <div key={i} className="flex items-start space-x-6 relative">
+                  <div className={cn(
+                    "w-8 h-8 border-2 border-black z-10 bg-white transition-all",
+                    item.status === 'done' ? "bg-black" : 
+                    item.status === 'active' ? "bg-accent animate-pulse" : 
+                    "bg-white"
+                  )} />
+                  <div className="space-y-1">
+                    <p className="font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-400">{item.time}</p>
+                    <p className="font-black uppercase tracking-tight text-sm text-black">{item.event}</p>
                   </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function cn(...inputs: any[]) {
-  return inputs.filter(Boolean).join(' ');
-}
+// Removed local cn definition

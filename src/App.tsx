@@ -11,6 +11,8 @@ import RegisterPage from '@/pages/RegisterPage';
 import UserDashboard from '@/pages/UserDashboard';
 import ProviderDashboard from '@/pages/ProviderDashboard';
 import AdminDashboard from '@/pages/AdminDashboard';
+import ProfilePage from '@/pages/ProfilePage';
+import SettingsPage from '@/pages/SettingsPage';
 import DashboardLayout from '@/components/DashboardLayout';
 
 export default function App() {
@@ -27,6 +29,8 @@ export default function App() {
           <Route path="/dashboard" element={<UserDashboard />} />
           <Route path="/provider" element={<ProviderDashboard />} />
           <Route path="/admin" element={<AdminDashboard />} />
+          <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/settings" element={<SettingsPage />} />
         </Route>
 
         {/* Fallback */}
