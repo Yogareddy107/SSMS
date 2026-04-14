@@ -150,7 +150,7 @@ export default function LandingPage() {
             <Link to="/login" className="hidden sm:block text-[11px] font-bold uppercase tracking-widest hover:text-accent transition-colors">
               Login
             </Link>
-            <Link to="/register">
+            <Link to="/login">
               <Button className="bg-black hover:bg-accent text-white px-8 h-12 rounded-none font-bold uppercase tracking-widest text-[11px] transition-all border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px]">
                 Get Started
               </Button>
@@ -437,7 +437,7 @@ export default function LandingPage() {
               Join the network of professional services reimagined for the modern era.
             </p>
             <div className="flex flex-col sm:flex-row gap-6">
-              <Link to="/register">
+              <Link to="/login">
                 <Button size="lg" className="bg-black hover:bg-white hover:text-black text-white h-20 px-16 text-xl rounded-none font-black uppercase tracking-widest border-2 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] hover:shadow-none transition-all">
                   Join Now
                 </Button>

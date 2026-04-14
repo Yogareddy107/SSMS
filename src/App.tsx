@@ -22,7 +22,7 @@ export default function App() {
         {/* Public Routes */}
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/register" element={<RegisterPage />} />
+        <Route path="/register" element={<Navigate to="/login" replace />} />
 
         {/* Protected Dashboard Routes */}
         <Route element={<DashboardLayout />}>
